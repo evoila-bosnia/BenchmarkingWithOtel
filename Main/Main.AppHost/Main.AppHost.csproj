@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\BenchmarkingWithOtel.Client\BenchmarkingWithOtel.Client.csproj" />
+    <ProjectReference Include="..\BenchmarkingWithOtel.ReverseProxy\BenchmarkingWithOtel.ReverseProxy.csproj" />
     <ProjectReference Include="..\BenchmarkingWithOtel.Server\BenchmarkingWithOtel.Server.csproj" />
   </ItemGroup>
 

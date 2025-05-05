@@ -1,0 +1,6 @@
+@BenchmarkingWithOtel.ReverseProxy_HostAddress = http://localhost:5275
+
+GET {{BenchmarkingWithOtel.ReverseProxy_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
