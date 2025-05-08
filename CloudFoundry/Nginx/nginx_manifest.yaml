@@ -1,0 +1,9 @@
+
+applications:
+- name: nginx-app
+  instances: 1
+  memory: 256M
+  docker:
+    image: acrgwcuiblazorapp01.azurecr.io/nginx/my-x86-image:latest  
+  routes:
+    - route: nginx-app.apps.tas.lab 

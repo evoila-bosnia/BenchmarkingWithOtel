@@ -1,0 +1,21 @@
+applications:
+- name: otel-server
+  env:
+    ConnectionStrings__oracledb: User Id=cfuser;Password=Evoila1;Data Source=10.244.20.17:1521/FREEPDB1;
+    OTEL_RESOURCE_ATTRIBUTES: service.name=benchmarkingwithotel-server,service.namespace=benchmark,deployment.environment=production
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://aspire-otel.apps.internal:4317
+  lifecycle: buildpack
+  buildpacks:
+  - dotnet_core_buildpack
+  stack: cflinuxfs4
+  routes:
+  - route: otel-server.apps.tas.lab
+    protocol: http1
+  processes:
+  - type: web
+    instances: 1
+    memory: 1024M
+    disk_quota: 1024M
+    log-rate-limit-per-second: 16K
+    health-check-type: port
+    readiness-health-check-type: process

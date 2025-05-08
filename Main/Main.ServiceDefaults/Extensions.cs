@@ -7,6 +7,7 @@ using Microsoft.Extensions.ServiceDiscovery;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
+using OpenTelemetry.Logs;
 
 namespace Microsoft.Extensions.Hosting;
 
@@ -47,6 +48,8 @@ public static class Extensions
         {
             logging.IncludeFormattedMessage = true;
             logging.IncludeScopes = true;
+            // Add console exporter for logs
+            logging.AddConsoleExporter();
         });
 
         builder.Services.AddOpenTelemetry()
@@ -73,6 +76,11 @@ public static class Extensions
     private static TBuilder AddOpenTelemetryExporters<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
     {
         var useOtlpExporter = !string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]);
+
+        // Always add console exporter for debugging
+        builder.Services.AddOpenTelemetry()
+            .WithTracing(tracing => tracing.AddConsoleExporter())
+            .WithMetrics(metrics => metrics.AddConsoleExporter());
 
         if (useOtlpExporter)
         {

@@ -10,6 +10,7 @@ public class BenchmarkDbContext : DbContext
 
     public BenchmarkDbContext(DbContextOptions<BenchmarkDbContext> options) : base(options)
     {
+        
     }
 
     public DbSet<BenchmarkItem> BenchmarkItems { get; set; } = null!;

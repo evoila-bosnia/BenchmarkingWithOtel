@@ -1,0 +1,24 @@
+---
+applications:
+- name: aspire-dashboard
+  env:
+    ASPNETCORE_URLS: http://0.0.0.0:8080
+    DOTNET_DASHBOARD_OTLP_ENDPOINT_URL: http://0.0.0.0:4317
+    ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL: http://0.0.0.0:4317
+    ASPIRE_DASHBOARD_OTLP_HTTP_ENPOINT_URL: http://0.0.0.0:18890
+  lifecycle: docker
+  docker:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.1
+  routes:
+  - route: aspire-dashboard.apps.tas.lab
+    protocol: http1
+  - route: aspire-otel.apps.internal
+    protocol: http1
+  processes:
+  - type: web
+    instances: 1
+    memory: 1024M
+    disk_quota: 1024M
+    log-rate-limit-per-second: 16K
+    health-check-type: process
+    readiness-health-check-type: process
