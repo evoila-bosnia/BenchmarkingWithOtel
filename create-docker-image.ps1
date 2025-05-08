@@ -27,17 +27,34 @@
 .PARAMETER Architectures
   Architectures to build for. Default is 'amd64,arm64'.
   Available options: amd64, arm64
+
+.PARAMETER Debug
+  Enable debug output.
 #>
 param (
     [string]$Tag = "benchmarking-client:latest",
     [bool]$SaveImage = $true,
     [bool]$PushImage = $false,
     [string]$Registry = "",
-    [string]$Architectures = "amd64,arm64"
+    [string]$Architectures = "amd64,arm64",
+    [switch]$Debug = $false
 )
 
 # Set error action preference
 $ErrorActionPreference = "Stop"
+if ($Debug) {
+    $VerbosePreference = "Continue"
+}
+
+function Write-DebugMessage {
+    param (
+        [string]$Message
+    )
+    
+    if ($Debug) {
+        Write-Host "[DEBUG] $Message" -ForegroundColor Magenta
+    }
+}
 
 # Parse architectures
 $archList = $Architectures.Split(",").Trim()
@@ -59,6 +76,9 @@ $archMap = @{
 # Check if Docker is installed and running
 try {
     docker version | Out-Null
+    if ($Debug) {
+        docker version
+    }
     Write-Host "Docker is installed and running." -ForegroundColor Green
 }
 catch {
@@ -76,7 +96,12 @@ if (-not (Test-Path $publishBaseDir)) {
 $useMultiArch = $false
 if ($archList.Count -gt 1) {
     try {
+        Write-DebugMessage "Checking Docker Buildx capability"
         docker buildx version | Out-Null
+        if ($Debug) {
+            docker buildx version
+        }
+        
         $builderExists = (docker buildx ls | Select-String "multiarch") -ne $null
         
         if (-not $builderExists) {
@@ -92,7 +117,30 @@ if ($archList.Count -gt 1) {
     }
     catch {
         Write-Host "Docker Buildx not available. Will build separate images for each architecture." -ForegroundColor Yellow
+        Write-DebugMessage "Docker Buildx error: $_"
         $useMultiArch = $false
+    }
+}
+
+# Verify ARM64 support
+if ($archList -contains "arm64") {
+    Write-DebugMessage "Testing ARM64 support in current environment"
+    
+    try {
+        # Test if ARM64 emulation is possible
+        $testArm64 = docker run --rm --platform linux/arm64 alpine:latest uname -m 2>$null
+        Write-DebugMessage "ARM64 test result: $testArm64"
+        
+        if ($testArm64 -ne "aarch64") {
+            Write-Host "Warning: ARM64 emulation may not be properly configured on this system." -ForegroundColor Yellow
+            Write-Host "The ARM64 build might fail or not work correctly." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "ARM64 emulation confirmed working." -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Host "Warning: Could not test ARM64 support. Error: $_" -ForegroundColor Yellow
     }
 }
 
@@ -118,29 +166,53 @@ foreach ($arch in $archList) {
     # Publish the application for the specific architecture
     Write-Host "`nPublishing the Client application for $arch ($runtimeId)..." -ForegroundColor Yellow
     try {
-        dotnet publish $clientProjectPath `
-            --configuration Release `
-            --output $publishOutputPath `
-            --runtime $runtimeId `
-            --self-contained true `
-            /p:PublishSingleFile=true `
-            /p:PublishTrimmed=true
-
+        Write-DebugMessage "Running dotnet publish with runtime $runtimeId"
+        
+        $publishCommand = "dotnet publish $clientProjectPath " +
+            "--configuration Release " +
+            "--output $publishOutputPath " +
+            "--runtime $runtimeId " +
+            "--self-contained true " +
+            "/p:PublishSingleFile=true " +
+            "/p:PublishTrimmed=true"
+        
+        if ($Debug) {
+            Write-Host $publishCommand -ForegroundColor DarkGray
+        }
+        
+        Invoke-Expression $publishCommand
+        
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to publish the Client application for $arch."
         }
         
+        # Verify published executable exists
+        $expectedExeName = "BenchmarkingWithOtel.Client"
+        if ($arch -eq "amd64" -or $arch -eq "arm64") {
+            # Linux executables don't have an extension
+            $exePath = Join-Path $publishOutputPath $expectedExeName
+        } else {
+            $exePath = Join-Path $publishOutputPath "$expectedExeName.exe"
+        }
+        
+        if (-not (Test-Path $exePath)) {
+            throw "Published executable not found at $exePath"
+        }
+        
         Write-Host "Client application published successfully for $arch." -ForegroundColor Green
+        Write-DebugMessage "Published executable: $exePath"
     }
     catch {
-        $errorMessage = "Error publishing the Client application"
+        $errorMessage = "Error publishing the Client application for $arch"
         Write-Host "$errorMessage - $_" -ForegroundColor Red
-        exit 1
+        Write-Host "Skipping this architecture and continuing with others." -ForegroundColor Yellow
+        continue  # Skip this architecture but try others
     }
     
     # Create architecture-specific Dockerfile
     Write-Host "Creating Dockerfile for $arch..." -ForegroundColor Yellow
-    @"
+    
+    $dockerfileContent = @"
 FROM mcr.microsoft.com/dotnet/runtime-deps:8.0-alpine
 
 WORKDIR /app
@@ -155,24 +227,60 @@ RUN chmod +x ./BenchmarkingWithOtel.Client
 
 # Set entry point to the application
 ENTRYPOINT ["./BenchmarkingWithOtel.Client"]
-"@ | Out-File -FilePath $dockerfilePath -Encoding UTF8
+"@
+    
+    $dockerfileContent | Out-File -FilePath $dockerfilePath -Encoding UTF8
+    Write-DebugMessage "Created Dockerfile at $dockerfilePath"
 
     # Build Docker image if not using multi-arch
     if (-not $useMultiArch) {
         Write-Host "Building Docker image for $arch with tag '$archTag'..." -ForegroundColor Yellow
         try {
-            docker build -t $archTag -f $dockerfilePath $publishBaseDir
-
+            $dockerPlatform = if ($arch -eq "amd64") { "linux/amd64" } else { "linux/arm64" }
+            
+            $buildCommand = "docker build --platform $dockerPlatform -t $archTag -f $dockerfilePath $publishBaseDir"
+            Write-DebugMessage "Running Docker build: $buildCommand"
+            
+            if ($Debug) {
+                Write-Host $buildCommand -ForegroundColor DarkGray
+            }
+            
+            Invoke-Expression $buildCommand
+            
             if ($LASTEXITCODE -ne 0) {
                 throw "Failed to build Docker image for $arch."
+            }
+            
+            # Save Docker image to file
+            if ($SaveImage) {
+                $archTarPath = $dockerImageTarPathTemplate -f $arch
+                Write-Host "Saving Docker image for $arch to file '$archTarPath'..." -ForegroundColor Yellow
+                
+                $saveCommand = "docker save -o $archTarPath $archTag"
+                Write-DebugMessage "Running Docker save: $saveCommand"
+                
+                Invoke-Expression $saveCommand
+                
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to save Docker image to file $archTarPath."
+                }
+                
+                if (Test-Path $archTarPath) {
+                    $fileSize = (Get-Item $archTarPath).Length / 1MB
+                    $formattedSize = [math]::Round($fileSize, 2)
+                    Write-Host "Docker image for $arch saved successfully to '$archTarPath' (Size - $formattedSize MB)." -ForegroundColor Green
+                } else {
+                    throw "Docker image file $archTarPath was not created."
+                }
             }
             
             Write-Host "Docker image for $arch built successfully with tag '$archTag'." -ForegroundColor Green
         }
         catch {
-            $errorMessage = "Error building Docker image for $arch"
+            $errorMessage = "Error building/saving Docker image for $arch"
             Write-Host "$errorMessage - $_" -ForegroundColor Red
-            exit 1
+            Write-Host "Skipping this architecture and continuing with others." -ForegroundColor Yellow
+            continue  # Skip this architecture but try others
         }
     }
 }
@@ -181,7 +289,8 @@ ENTRYPOINT ["./BenchmarkingWithOtel.Client"]
 if ($useMultiArch) {
     Write-Host "`nBuilding multi-architecture Docker image with tag '$Tag'..." -ForegroundColor Yellow
     
-    $buildxArgs = "buildx build --platform=" + ($archList -join ",") + " -t $Tag"
+    $platforms = ($archList | ForEach-Object { if ($_ -eq "amd64") { "linux/amd64" } else { "linux/arm64" } }) -join ","
+    $buildxArgs = "buildx build --platform=$platforms -t $Tag"
     
     # Add push flag if requested
     if ($PushImage) {
@@ -202,19 +311,103 @@ if ($useMultiArch) {
     $buildxArgs += " -f $($dockerfilePathTemplate -f $archList[0]) $publishBaseDir"
     
     try {
-        Invoke-Expression "docker $buildxArgs"
+        $buildCommand = "docker $buildxArgs"
+        Write-DebugMessage "Running Docker Buildx: $buildCommand"
+        
+        if ($Debug) {
+            Write-Host $buildCommand -ForegroundColor DarkGray
+        }
+        
+        Invoke-Expression $buildCommand
         
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to build multi-architecture Docker image."
         }
         
         Write-Host "Multi-architecture Docker image built successfully with tag '$Tag'." -ForegroundColor Green
+        
+        # Save Docker images to files if requested
+        if ($SaveImage) {
+            # Multi-arch images can't be directly saved to a tar file, so save each architecture separately
+            foreach ($arch in $archList) {
+                $dockerPlatform = if ($arch -eq "amd64") { "linux/amd64" } else { "linux/arm64" }
+                $archTag = "$Tag-$arch"
+                $archTarPath = $dockerImageTarPathTemplate -f $arch
+                
+                Write-Host "Saving Docker image for $arch to file '$archTarPath'..." -ForegroundColor Yellow
+                
+                # Need to create a separate tag for saving
+                $tagCommand = "docker tag $Tag $archTag"
+                Write-DebugMessage "Running Docker tag: $tagCommand"
+                Invoke-Expression $tagCommand
+                
+                $saveCommand = "docker save -o $archTarPath $archTag"
+                Write-DebugMessage "Running Docker save: $saveCommand"
+                Invoke-Expression $saveCommand
+                
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "Warning: Could not save Docker image to file $archTarPath - $_" -ForegroundColor Yellow
+                } 
+                else {
+                    if (Test-Path $archTarPath) {
+                        $fileSize = (Get-Item $archTarPath).Length / 1MB
+                        $formattedSize = [math]::Round($fileSize, 2)
+                        Write-Host "Docker image for $arch saved successfully to '$archTarPath' (Size - $formattedSize MB)." -ForegroundColor Green
+                    } 
+                    else {
+                        Write-Host "Warning: Docker image file $archTarPath was not created." -ForegroundColor Yellow
+                    }
+                }
+            }
+        }
     }
     catch {
         $errorMessage = "Error building multi-architecture Docker image"
         Write-Host "$errorMessage - $_" -ForegroundColor Red
         Write-Host "You may need to install Docker Buildx or a newer version of Docker to support multi-arch builds." -ForegroundColor Yellow
-        exit 1
+        Write-Host "Falling back to individual architecture builds..." -ForegroundColor Yellow
+        
+        # Fall back to individual builds for each architecture
+        foreach ($arch in $archList) {
+            if (-not ($archTags -contains "$Tag-$arch")) {
+                Write-Host "Building fallback image for $arch..." -ForegroundColor Yellow
+                $dockerPlatform = if ($arch -eq "amd64") { "linux/amd64" } else { "linux/arm64" }
+                $archTag = "$Tag-$arch"
+                $dockerfilePath = $dockerfilePathTemplate -f $arch
+                
+                $buildCommand = "docker build --platform $dockerPlatform -t $archTag -f $dockerfilePath $publishBaseDir"
+                Write-DebugMessage "Running fallback Docker build: $buildCommand"
+                
+                try {
+                    Invoke-Expression $buildCommand
+                    
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "Warning: Failed to build fallback Docker image for $arch." -ForegroundColor Yellow
+                        continue
+                    }
+                    
+                    # Save Docker image to file
+                    if ($SaveImage) {
+                        $archTarPath = $dockerImageTarPathTemplate -f $arch
+                        Write-Host "Saving fallback Docker image for $arch to file '$archTarPath'..." -ForegroundColor Yellow
+                        
+                        $saveCommand = "docker save -o $archTarPath $archTag"
+                        Invoke-Expression $saveCommand
+                        
+                        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $archTarPath)) {
+                            Write-Host "Warning: Could not save fallback Docker image to file $archTarPath" -ForegroundColor Yellow
+                        } else {
+                            $fileSize = (Get-Item $archTarPath).Length / 1MB
+                            $formattedSize = [math]::Round($fileSize, 2)
+                            Write-Host "Fallback Docker image for $arch saved successfully to '$archTarPath' (Size - $formattedSize MB)." -ForegroundColor Green
+                        }
+                    }
+                }
+                catch {
+                    Write-Host "Warning: Failed to build/save fallback Docker image for $arch - $_" -ForegroundColor Yellow
+                }
+            }
+        }
     }
 }
 else {
@@ -249,71 +442,34 @@ else {
     }
 }
 
-# Save Docker images to files if requested
-if ($SaveImage) {
-    if ($useMultiArch) {
-        # Multi-arch images can't be directly saved to a tar file, so save each architecture separately
-        foreach ($arch in $archList) {
-            $archTag = $Tag + "-" + $arch
-            $archTarPath = $dockerImageTarPathTemplate -f $arch
-            
-            Write-Host "Saving Docker image for $arch to file '$archTarPath'..." -ForegroundColor Yellow
-            try {
-                docker save -o $archTarPath $archTag
-                
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Failed to save Docker image to file."
-                }
-                
-                Write-Host "Docker image for $arch saved successfully to '$archTarPath'." -ForegroundColor Green
-            }
-            catch {
-                $errorMessage = "Error saving Docker image"
-                Write-Host "$errorMessage - $_" -ForegroundColor Red
-            }
-        }
-    }
-    else {
-        # Save each architecture image
-        foreach ($archTag in $archTags) {
-            $arch = ($archTag).Replace($Tag + "-", "")
-            $archTarPath = $dockerImageTarPathTemplate -f $arch
-            
-            Write-Host "Saving Docker image for $arch to file '$archTarPath'..." -ForegroundColor Yellow
-            try {
-                docker save -o $archTarPath $archTag
-                
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Failed to save Docker image to file."
-                }
-                
-                Write-Host "Docker image for $arch saved successfully to '$archTarPath'." -ForegroundColor Green
-            }
-            catch {
-                $errorMessage = "Error saving Docker image"
-                Write-Host "$errorMessage - $_" -ForegroundColor Red
-            }
-        }
-    }
-}
-
 # Clean up
 Write-Host "`nCleaning up temporary files..." -ForegroundColor Yellow
 Remove-Item -Recurse -Force $publishBaseDir
 
-Write-Host "`nDocker image process completed successfully." -ForegroundColor Green
+# Display summary
+Write-Host "`nDocker image process completed." -ForegroundColor Green
 Write-Host "Image details:" -ForegroundColor Cyan
 Write-Host " - Image tag: $Tag" -ForegroundColor White
-Write-Host " - Architectures: $($archList -join ', ')" -ForegroundColor White
+Write-Host " - Architectures attempted: $($archList -join ', ')" -ForegroundColor White
 
+# Check which image files actually exist
 if ($SaveImage) {
-    Write-Host " - Image files:" -ForegroundColor White
+    Write-Host " - Image files created:" -ForegroundColor White
+    $createdImageCount = 0
+    
     foreach ($arch in $archList) {
         $archTarPath = $dockerImageTarPathTemplate -f $arch
         if (Test-Path $archTarPath) {
             $fileSize = (Get-Item $archTarPath).Length / 1MB
-            Write-Host "   - $archTarPath ($([math]::Round($fileSize, 2)) MB)" -ForegroundColor White
+            $formattedSize = [math]::Round($fileSize, 2)
+            Write-Host "   - $archTarPath ($formattedSize MB)" -ForegroundColor White
+            $createdImageCount++
         }
+    }
+    
+    if ($createdImageCount -eq 0) {
+        Write-Host "   None! No Docker image files were successfully created." -ForegroundColor Red
+        Write-Host "Try running with -Debug switch for more information." -ForegroundColor Yellow
     }
 }
 
@@ -323,15 +479,38 @@ if ($PushImage) {
 
 Write-Host "`nTo use these Docker images:" -ForegroundColor Cyan
 Write-Host "1. Run the container directly:" -ForegroundColor White
-Write-Host "   docker run -e \"ServiceUrl=http://server:5000\" -e \"OtelEndpoint=http://otelcollector:4317\" $Tag" -ForegroundColor White
 
-if ($SaveImage) {
-    Write-Host "2. Or load the saved image files on another machine:" -ForegroundColor White
-    foreach ($arch in $archList) {
-        $archTarPath = $dockerImageTarPathTemplate -f $arch
-        Write-Host "   For $arch - docker load -i $archTarPath" -ForegroundColor White
+$createdArches = @()
+foreach ($arch in $archList) {
+    $archTarPath = $dockerImageTarPathTemplate -f $arch
+    if (Test-Path $archTarPath) {
+        $createdArches += $arch
     }
 }
 
-Write-Host "`nNote: When running on ARM64 devices (like Raspberry Pi or Apple Silicon):" -ForegroundColor Yellow
-Write-Host "   docker run -e \"ServiceUrl=http://server:5000\" benchmarking-client:latest-arm64" -ForegroundColor White 
+if ($createdArches.Count -gt 0) {
+    foreach ($arch in $createdArches) {
+        $archTag = "$Tag-$arch"
+        Write-Host "   For $arch - docker run -e \"ServiceUrl=http://server:5000\" $archTag" -ForegroundColor White
+    }
+    
+    Write-Host "2. Or load the saved image files on another machine:" -ForegroundColor White
+    foreach ($arch in $createdArches) {
+        $archTarPath = $dockerImageTarPathTemplate -f $arch
+        Write-Host "   For $arch - docker load -i $archTarPath" -ForegroundColor White
+    }
+    
+    if ($createdArches -contains "arm64") {
+        Write-Host "`nNote: When running on ARM64 devices (like Raspberry Pi or Apple Silicon):" -ForegroundColor Yellow
+        Write-Host "   docker run -e \"ServiceUrl=http://server:5000\" $Tag-arm64" -ForegroundColor White
+    }
+} else {
+    Write-Host "   No Docker images were successfully created. See errors above." -ForegroundColor Red
+}
+
+# Return 0 for success if at least one architecture was built
+if ($createdArches.Count -gt 0) {
+    exit 0
+} else {
+    exit 1
+} 
