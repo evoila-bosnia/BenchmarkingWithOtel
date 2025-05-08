@@ -130,7 +130,7 @@ function Publish-Client-For-Platform {
   <PropertyGroup>
     <PublishSingleFile>true</PublishSingleFile>
     <PublishTrimmed>true</PublishTrimmed>
-    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRun>false</PublishReadyToRun>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>embedded</DebugType>
@@ -139,13 +139,18 @@ function Publish-Client-For-Platform {
   </PropertyGroup>
 </Project>
 "@
-        $propsPath = Join-Path $outputPath "Client.pubxml"
+        $propsPath = Join-Path $outputPath "Client-$platform.pubxml"
         $propsContent | Out-File -FilePath $propsPath -Encoding UTF8
         
+        Write-Host "Using platform-specific settings: Runtime=$platform, Props file=$propsPath" -ForegroundColor Cyan
+        
         # Publish the client application with platform-specific and portable options
+        # Explicitly set the runtime identifier on the command line as well
         dotnet publish $projectPath `
             --configuration Release `
             --output $platformOutputDir `
+            --self-contained true `
+            --runtime $platform `
             -p:PublishProfile=$propsPath
         
         # Check if publish was successful
