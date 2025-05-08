@@ -68,9 +68,9 @@ builder.Services.AddSingleton<BenchmarkRunner>();
 // Configure default benchmark settings if not provided
 if (!builder.Configuration.GetSection("Benchmark").GetChildren().Any())
 {
-    builder.Configuration["Benchmark:OperationCount"] = "1000";
-    builder.Configuration["Benchmark:Iterations"] = "3";
-    builder.Configuration["Benchmark:DelayBetweenRuns"] = "5000";
+    builder.Configuration["Benchmark:OperationCount"] = "10";
+    builder.Configuration["Benchmark:Iterations"] = "1";
+    builder.Configuration["Benchmark:DelayBetweenRuns"] = "50";
 }
 
 // Register worker
