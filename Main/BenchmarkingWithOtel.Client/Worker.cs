@@ -1,5 +1,6 @@
 using BenchmarkingWithOtel.Client.Models;
 using BenchmarkingWithOtel.Client.Services;
+using BenchmarkingWithOtel.Client.Telemetry;
 using System.Diagnostics;
 
 namespace BenchmarkingWithOtel.Client;
@@ -19,8 +20,11 @@ public class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Clear any current activity to prevent creating a parent trace
+        Activity.Current = null;
+        
         // Allow some time for the server to start
-        _logger.LogInformation("Waiting for server to start...");
+        _logger.LogInformationWithContext("Waiting for server to start...");
         await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
         
         // Get benchmark configuration
@@ -28,14 +32,17 @@ public class Worker : BackgroundService
         var iterations = _configuration.GetValue<int>("Benchmark:Iterations", 3);
         var delayBetweenRuns = _configuration.GetValue<int>("Benchmark:DelayBetweenRuns", 5000);
         
-        _logger.LogInformation("Starting benchmark with {OperationCount} operations per test, {Iterations} iterations", 
+        _logger.LogInformationWithContext("Starting benchmark with {OperationCount} operations per test, {Iterations} iterations", 
             operationCount, iterations);
         
         var allResults = new List<List<BenchmarkResult>>();
         
         for (int i = 0; i < iterations && !stoppingToken.IsCancellationRequested; i++)
         {
-            _logger.LogInformation("Starting iteration {Iteration}/{TotalIterations}", i + 1, iterations);
+            // Reset current activity for each iteration
+            Activity.Current = null;
+            
+            _logger.LogInformationWithContext("Starting iteration {Iteration}/{TotalIterations}", i + 1, iterations);
             var iterationResults = new List<BenchmarkResult>();
             
             // CREATE benchmark
@@ -66,21 +73,21 @@ public class Worker : BackgroundService
             
             if (i < iterations - 1)
             {
-                _logger.LogInformation("Iteration {Iteration} completed. Waiting for {Delay}ms before next iteration", 
+                _logger.LogInformationWithContext("Iteration {Iteration} completed. Waiting for {Delay}ms before next iteration", 
                     i + 1, delayBetweenRuns * 2);
                 await Task.Delay(delayBetweenRuns * 2, stoppingToken);
             }
             
             // Print iteration summary
             var iterationSummary = BenchmarkResult.GenerateSummary(iterationResults);
-            _logger.LogInformation("Iteration {Iteration}/{TotalIterations} Summary:\n{Summary}", 
+            _logger.LogInformationWithContext("Iteration {Iteration}/{TotalIterations} Summary:\n{Summary}", 
                 i + 1, iterations, iterationSummary);
         }
         
         // Generate final summary across all iterations
         if (allResults.Count > 0)
         {
-            _logger.LogInformation("Benchmark completed. Generating final summary...");
+            _logger.LogInformationWithContext("Benchmark completed. Generating final summary...");
             
             // Combine results across iterations for each benchmark type
             var finalResults = new List<BenchmarkResult>();
@@ -115,11 +122,11 @@ public class Worker : BackgroundService
             }
             
             var finalSummary = BenchmarkResult.GenerateSummary(finalResults);
-            _logger.LogInformation("FINAL BENCHMARK SUMMARY (Across all iterations):\n{Summary}", finalSummary);
+            _logger.LogInformationWithContext("FINAL BENCHMARK SUMMARY (Across all iterations):\n{Summary}", finalSummary);
         }
         else
         {
-            _logger.LogWarning("Benchmark completed but no results were collected");
+            _logger.LogWarningWithContext("Benchmark completed but no results were collected");
         }
     }
 }

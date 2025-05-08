@@ -26,7 +26,10 @@ public class BenchmarkService
 
     public async Task<IEnumerable<BenchmarkItem>?> GetAllItemsAsync()
     {
-        using var activity = ActivitySource.StartActivity("GetAllItems", ActivityKind.Client);
+        using var activity = ActivitySource.StartActivity("GetAllItems", ActivityKind.Client, 
+                                                         new ActivityContext(ActivityTraceId.CreateRandom(), 
+                                                                            ActivitySpanId.CreateRandom(), 
+                                                                            ActivityTraceFlags.Recorded));
         
         try
         {
@@ -51,7 +54,11 @@ public class BenchmarkService
 
     public async Task<BenchmarkItem?> GetItemByIdAsync(int id)
     {
-        using var activity = ActivitySource.StartActivity("GetItemById", ActivityKind.Client);
+        using var activity = ActivitySource.StartActivity("GetItemById", ActivityKind.Client,
+                                                         new ActivityContext(ActivityTraceId.CreateRandom(), 
+                                                                            ActivitySpanId.CreateRandom(), 
+                                                                            ActivityTraceFlags.Recorded));
+        
         activity?.SetTag("benchmark.item.id", id);
         activity?.SetTag("benchmark.operation", "get_by_id");
         
@@ -72,7 +79,11 @@ public class BenchmarkService
 
     public async Task<BenchmarkItem?> CreateItemAsync(BenchmarkItem item)
     {
-        using var activity = ActivitySource.StartActivity("CreateItem", ActivityKind.Client);
+        using var activity = ActivitySource.StartActivity("CreateItem", ActivityKind.Client,
+                                                         new ActivityContext(ActivityTraceId.CreateRandom(), 
+                                                                            ActivitySpanId.CreateRandom(), 
+                                                                            ActivityTraceFlags.Recorded));
+        
         activity?.SetTag("benchmark.item.name", item.Name);
         activity?.SetTag("benchmark.operation", "create");
         
@@ -98,7 +109,11 @@ public class BenchmarkService
 
     public async Task<bool> UpdateItemAsync(int id, BenchmarkItem item)
     {
-        using var activity = ActivitySource.StartActivity("UpdateItem", ActivityKind.Client);
+        using var activity = ActivitySource.StartActivity("UpdateItem", ActivityKind.Client,
+                                                         new ActivityContext(ActivityTraceId.CreateRandom(), 
+                                                                            ActivitySpanId.CreateRandom(), 
+                                                                            ActivityTraceFlags.Recorded));
+        
         activity?.SetTag("benchmark.item.id", id);
         activity?.SetTag("benchmark.operation", "update");
         
@@ -120,7 +135,11 @@ public class BenchmarkService
 
     public async Task<bool> DeleteItemAsync(int id)
     {
-        using var activity = ActivitySource.StartActivity("DeleteItem", ActivityKind.Client);
+        using var activity = ActivitySource.StartActivity("DeleteItem", ActivityKind.Client,
+                                                         new ActivityContext(ActivityTraceId.CreateRandom(), 
+                                                                            ActivitySpanId.CreateRandom(), 
+                                                                            ActivityTraceFlags.Recorded));
+        
         activity?.SetTag("benchmark.item.id", id);
         activity?.SetTag("benchmark.operation", "delete");
         

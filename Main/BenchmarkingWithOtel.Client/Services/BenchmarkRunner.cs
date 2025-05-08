@@ -9,7 +9,6 @@ public class BenchmarkRunner
     private readonly BenchmarkService _benchmarkService;
     private readonly ILogger<BenchmarkRunner> _logger;
     private readonly MetricsService _metricsService;
-    private static readonly ActivitySource ActivitySource = new("BenchmarkingWithOtel.Client.Runner");
     
     private readonly Random _random = new();
 
@@ -22,9 +21,8 @@ public class BenchmarkRunner
 
     public async Task<BenchmarkResult> RunCreateBenchmarkAsync(int count, CancellationToken cancellationToken)
     {
-        using var activity = ActivitySource.StartActivity("RunCreateBenchmark", ActivityKind.Internal);
-        activity?.AddTag("benchmark.operation_count", count);
-        
+        // Instead of creating an Activity that would become a parent trace,
+        // we'll just use metrics and logs to track the benchmark progress
         _logger.LogInformationWithContext("Starting CREATE benchmark with {Count} items", count);
         var stopwatch = Stopwatch.StartNew();
         var successCount = 0;
@@ -57,10 +55,6 @@ public class BenchmarkRunner
         stopwatch.Stop();
         var elapsedMs = stopwatch.ElapsedMilliseconds;
         var requestsPerSecond = successCount / (elapsedMs / 1000.0);
-
-        activity?.AddTag("benchmark.success_count", successCount);
-        activity?.AddTag("benchmark.elapsed_ms", elapsedMs);
-        activity?.AddTag("benchmark.requests_per_second", requestsPerSecond);
         
         _logger.LogInformationWithContext("CREATE benchmark completed: {Success}/{Total} operations in {ElapsedMs}ms ({RequestsPerSecond:F2} req/sec)",
             successCount, count, elapsedMs, requestsPerSecond);
@@ -79,15 +73,11 @@ public class BenchmarkRunner
 
     public async Task<BenchmarkResult> RunReadBenchmarkAsync(int count, CancellationToken cancellationToken)
     {
-        using var activity = ActivitySource.StartActivity("RunReadBenchmark", ActivityKind.Internal);
-        activity?.AddTag("benchmark.operation_count", count);
-        
         // First, get all available IDs
         var allItems = await _benchmarkService.GetAllItemsAsync();
         if (allItems == null || !allItems.Any())
         {
             _logger.LogWarningWithContext("No items found in database to run READ benchmark");
-            activity?.SetStatus(ActivityStatusCode.Error, "No items to benchmark");
             
             return new BenchmarkResult 
             { 
@@ -134,10 +124,6 @@ public class BenchmarkRunner
         stopwatch.Stop();
         var elapsedMs = stopwatch.ElapsedMilliseconds;
         var requestsPerSecond = successCount / (elapsedMs / 1000.0);
-        
-        activity?.AddTag("benchmark.success_count", successCount);
-        activity?.AddTag("benchmark.elapsed_ms", elapsedMs);
-        activity?.AddTag("benchmark.requests_per_second", requestsPerSecond);
 
         _logger.LogInformationWithContext("READ benchmark completed: {Success}/{Total} operations in {ElapsedMs}ms ({RequestsPerSecond:F2} req/sec)",
             successCount, count, elapsedMs, requestsPerSecond);
@@ -160,7 +146,7 @@ public class BenchmarkRunner
         var allItems = await _benchmarkService.GetAllItemsAsync();
         if (allItems == null || !allItems.Any())
         {
-            _logger.LogWarning("No items found in database to run UPDATE benchmark");
+            _logger.LogWarningWithContext("No items found in database to run UPDATE benchmark");
             return new BenchmarkResult 
             { 
                 Name = "UPDATE",
@@ -171,7 +157,7 @@ public class BenchmarkRunner
         }
 
         var itemsList = allItems.ToList();
-        _logger.LogInformation("Starting UPDATE benchmark with {Count} operations", count);
+        _logger.LogInformationWithContext("Starting UPDATE benchmark with {Count} operations", count);
         
         var stopwatch = Stopwatch.StartNew();
         var successCount = 0;
@@ -204,7 +190,7 @@ public class BenchmarkRunner
             if (i > 0 && i % progressStep == 0)
             {
                 var percentComplete = (int)((double)i / count * 100);
-                _logger.LogInformation("UPDATE progress: {PercentComplete}% ({CurrentCount}/{TotalCount})", 
+                _logger.LogInformationWithContext("UPDATE progress: {PercentComplete}% ({CurrentCount}/{TotalCount})", 
                     percentComplete, i, count);
             }
         }
@@ -213,7 +199,7 @@ public class BenchmarkRunner
         var elapsedMs = stopwatch.ElapsedMilliseconds;
         var requestsPerSecond = successCount / (elapsedMs / 1000.0);
 
-        _logger.LogInformation("UPDATE benchmark completed: {Success}/{Total} operations in {ElapsedMs}ms ({RequestsPerSecond:F2} req/sec)",
+        _logger.LogInformationWithContext("UPDATE benchmark completed: {Success}/{Total} operations in {ElapsedMs}ms ({RequestsPerSecond:F2} req/sec)",
             successCount, count, elapsedMs, requestsPerSecond);
             
         // Record batch metrics
@@ -231,7 +217,7 @@ public class BenchmarkRunner
     public async Task<BenchmarkResult> RunDeleteBenchmarkAsync(int count, CancellationToken cancellationToken)
     {
         // First create items to delete
-        _logger.LogInformation("Creating {Count} items for DELETE benchmark", count);
+        _logger.LogInformationWithContext("Creating {Count} items for DELETE benchmark", count);
         var createdItems = new List<BenchmarkItem>();
         var progressStep = Math.Max(1, count / 10); // Show progress for item creation
         
@@ -249,14 +235,14 @@ public class BenchmarkRunner
             if (i > 0 && i % progressStep == 0)
             {
                 var percentComplete = (int)((double)i / count * 100);
-                _logger.LogInformation("DELETE setup progress: {PercentComplete}% ({CurrentCount}/{TotalCount})", 
+                _logger.LogInformationWithContext("DELETE setup progress: {PercentComplete}% ({CurrentCount}/{TotalCount})", 
                     percentComplete, i, count);
             }
         }
 
         if (!createdItems.Any())
         {
-            _logger.LogWarning("Failed to create items for DELETE benchmark");
+            _logger.LogWarningWithContext("Failed to create items for DELETE benchmark");
             return new BenchmarkResult 
             { 
                 Name = "DELETE",
@@ -266,7 +252,7 @@ public class BenchmarkRunner
             };
         }
 
-        _logger.LogInformation("Starting DELETE benchmark with {Count} operations", createdItems.Count);
+        _logger.LogInformationWithContext("Starting DELETE benchmark with {Count} operations", createdItems.Count);
         
         var stopwatch = Stopwatch.StartNew();
         var successCount = 0;
@@ -293,7 +279,7 @@ public class BenchmarkRunner
             if (i > 0 && i % progressStep == 0)
             {
                 var percentComplete = (int)((double)i / deleteCount * 100);
-                _logger.LogInformation("DELETE progress: {PercentComplete}% ({CurrentCount}/{TotalCount})", 
+                _logger.LogInformationWithContext("DELETE progress: {PercentComplete}% ({CurrentCount}/{TotalCount})", 
                     percentComplete, i, deleteCount);
             }
         }
@@ -302,7 +288,7 @@ public class BenchmarkRunner
         var elapsedMs = stopwatch.ElapsedMilliseconds;
         var requestsPerSecond = successCount / (elapsedMs / 1000.0);
 
-        _logger.LogInformation("DELETE benchmark completed: {Success}/{Total} operations in {ElapsedMs}ms ({RequestsPerSecond:F2} req/sec)",
+        _logger.LogInformationWithContext("DELETE benchmark completed: {Success}/{Total} operations in {ElapsedMs}ms ({RequestsPerSecond:F2} req/sec)",
             successCount, deleteCount, elapsedMs, requestsPerSecond);
             
         // Record batch metrics
@@ -319,11 +305,11 @@ public class BenchmarkRunner
 
     public async Task<BenchmarkResult> RunMixedWorkloadBenchmarkAsync(int count, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Starting MIXED workload benchmark with {Count} operations", count);
+        _logger.LogInformationWithContext("Starting MIXED workload benchmark with {Count} operations", count);
         
         // Create initial data
         var initialCount = Math.Min(count / 10, 100);
-        _logger.LogInformation("Creating {Count} initial items for MIXED workload", initialCount);
+        _logger.LogInformationWithContext("Creating {Count} initial items for MIXED workload", initialCount);
         
         for (int i = 0; i < initialCount && !cancellationToken.IsCancellationRequested; i++)
         {
@@ -426,7 +412,7 @@ public class BenchmarkRunner
             if (i > 0 && i % progressStep == 0)
             {
                 var percentComplete = (int)((double)i / count * 100);
-                _logger.LogInformation("MIXED workload progress: {PercentComplete}% ({CurrentCount}/{TotalCount})", 
+                _logger.LogInformationWithContext("MIXED workload progress: {PercentComplete}% ({CurrentCount}/{TotalCount})", 
                     percentComplete, i, count);
             }
         }
@@ -435,10 +421,10 @@ public class BenchmarkRunner
         var elapsedMs = stopwatch.ElapsedMilliseconds;
         var requestsPerSecond = successCount / (elapsedMs / 1000.0);
 
-        _logger.LogInformation("MIXED workload benchmark completed: {Success}/{Total} operations in {ElapsedMs}ms ({RequestsPerSecond:F2} req/sec)",
+        _logger.LogInformationWithContext("MIXED workload benchmark completed: {Success}/{Total} operations in {ElapsedMs}ms ({RequestsPerSecond:F2} req/sec)",
             successCount, count, elapsedMs, requestsPerSecond);
         
-        _logger.LogInformation("MIXED workload details: CREATE={CreateCount}, READ={ReadCount}, UPDATE={UpdateCount}, DELETE={DeleteCount}",
+        _logger.LogInformationWithContext("MIXED workload details: CREATE={CreateCount}, READ={ReadCount}, UPDATE={UpdateCount}, DELETE={DeleteCount}",
             createCount, readCount, updateCount, deleteCount);
             
         // Record batch metrics
