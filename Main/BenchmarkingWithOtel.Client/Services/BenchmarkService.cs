@@ -36,11 +36,34 @@ public class BenchmarkService
             activity?.SetTag("benchmark.operation", "get_all");
             _logger.LogInformationWithContext("Fetching all benchmark items");
             
-            var response = await _httpClient.GetFromJsonAsync<IEnumerable<BenchmarkItem>>("/api/benchmark-items", _jsonOptions);
+            var httpStopwatch = Stopwatch.StartNew();
+            
+            var httpResponse = await _httpClient.GetAsync("/api/benchmark-items");
+            httpStopwatch.Stop();
+            
+            activity?.SetTag("benchmark.http_request_time_ms", httpStopwatch.ElapsedMilliseconds);
+            
+            using var deserializeActivity = ActivitySource.StartActivity(
+                "DeserializeResponse", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            deserializeActivity?.SetTag("benchmark.content_length", httpResponse.Content.Headers.ContentLength ?? 0);
+            
+            var deserializeStopwatch = Stopwatch.StartNew();
+            var response = await httpResponse.Content.ReadFromJsonAsync<IEnumerable<BenchmarkItem>>(_jsonOptions);
+            deserializeStopwatch.Stop();
+            
+            deserializeActivity?.SetTag("benchmark.deserialize_time_ms", deserializeStopwatch.ElapsedMilliseconds);
+            
             var itemCount = response?.Count() ?? 0;
             
             activity?.SetTag("benchmark.items.count", itemCount);
-            _logger.LogInformationWithContext("Retrieved {ItemCount} benchmark items", itemCount);
+            _logger.LogInformationWithContext("Retrieved {ItemCount} benchmark items in {TotalTime}ms (HTTP: {HttpTime}ms, Deserialize: {DeserializeTime}ms)", 
+                itemCount, 
+                httpStopwatch.ElapsedMilliseconds + deserializeStopwatch.ElapsedMilliseconds,
+                httpStopwatch.ElapsedMilliseconds,
+                deserializeStopwatch.ElapsedMilliseconds);
             
             return response;
         }
@@ -65,7 +88,26 @@ public class BenchmarkService
         try
         {
             _logger.LogInformationWithContext("Fetching benchmark item with ID {ItemId}", id);
-            var item = await _httpClient.GetFromJsonAsync<BenchmarkItem>($"/api/benchmark-items/{id}", _jsonOptions);
+            
+            var httpStopwatch = Stopwatch.StartNew();
+            var httpResponse = await _httpClient.GetAsync($"/api/benchmark-items/{id}");
+            httpStopwatch.Stop();
+            
+            activity?.SetTag("benchmark.http_request_time_ms", httpStopwatch.ElapsedMilliseconds);
+            
+            using var deserializeActivity = ActivitySource.StartActivity(
+                "DeserializeResponse", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            deserializeActivity?.SetTag("benchmark.content_length", httpResponse.Content.Headers.ContentLength ?? 0);
+            
+            var deserializeStopwatch = Stopwatch.StartNew();
+            var item = await httpResponse.Content.ReadFromJsonAsync<BenchmarkItem>(_jsonOptions);
+            deserializeStopwatch.Stop();
+            
+            deserializeActivity?.SetTag("benchmark.deserialize_time_ms", deserializeStopwatch.ElapsedMilliseconds);
+            
             _logger.LogInformationWithContext("Retrieved benchmark item {ItemId}", id);
             return item;
         }
@@ -92,6 +134,11 @@ public class BenchmarkService
             _logger.LogInformationWithContext("Creating new benchmark item");
             var response = await _httpClient.PostAsJsonAsync("/api/benchmark-items", item, _jsonOptions);
             response.EnsureSuccessStatusCode();
+            
+            using var deserializeActivity = ActivitySource.StartActivity(
+                "DeserializeResponse", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
             
             var createdItem = await response.Content.ReadFromJsonAsync<BenchmarkItem>(_jsonOptions);
             activity?.SetTag("benchmark.item.id", createdItem?.Id);

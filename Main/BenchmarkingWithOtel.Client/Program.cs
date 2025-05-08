@@ -6,10 +6,15 @@ using OpenTelemetry.Trace;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
+using OpenTelemetry.Context.Propagation;
 
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.AddServiceDefaults();
+
+// Enable W3C propagation for distributed tracing
+Activity.DefaultIdFormat = ActivityIdFormat.W3C;
+Activity.ForceDefaultIdFormat = true;
 
 // Create a shared resource for OpenTelemetry
 var otelResource = ResourceBuilder.CreateDefault()
@@ -54,12 +59,15 @@ builder.Logging.AddOpenTelemetry(options =>
     options.ParseStateValues = true;
 });
 
-// Register HTTP client for the server
+// Register HTTP client for the server with propagation headers
 builder.Services.AddHttpClient<BenchmarkService>(client =>
 {
     // The URI will be provided by Aspire service discovery
     client.BaseAddress = new Uri(builder.Configuration.GetValue<string>("ServerUrl", "http://benchmarkingwithotel-server"));
     client.Timeout = TimeSpan.FromSeconds(30);
+    
+    // Add default headers to identify client
+    client.DefaultRequestHeaders.Add("X-Benchmark-Client", "BenchmarkingWithOtel.Client");
 });
 
 // Register benchmark services
@@ -68,9 +76,9 @@ builder.Services.AddSingleton<BenchmarkRunner>();
 // Configure default benchmark settings if not provided
 if (!builder.Configuration.GetSection("Benchmark").GetChildren().Any())
 {
-    builder.Configuration["Benchmark:OperationCount"] = "10";
-    builder.Configuration["Benchmark:Iterations"] = "1";
-    builder.Configuration["Benchmark:DelayBetweenRuns"] = "50";
+    builder.Configuration["Benchmark:OperationCount"] = "1000";
+    builder.Configuration["Benchmark:Iterations"] = "3";
+    builder.Configuration["Benchmark:DelayBetweenRuns"] = "5000";
 }
 
 // Register worker
