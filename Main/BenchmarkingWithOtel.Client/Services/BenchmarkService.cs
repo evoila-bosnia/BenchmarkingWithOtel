@@ -31,46 +31,112 @@ public class BenchmarkService
                                                                             ActivitySpanId.CreateRandom(), 
                                                                             ActivityTraceFlags.Recorded));
         
+        var totalStopwatch = Stopwatch.StartNew();
+        
         try
         {
             activity?.SetTag("benchmark.operation", "get_all");
             _logger.LogInformationWithContext("Fetching all benchmark items");
             
-            var httpStopwatch = Stopwatch.StartNew();
+            using var requestPrepActivity = ActivitySource.StartActivity(
+                "PrepareRequest", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var requestPrepStopwatch = Stopwatch.StartNew();
+            var request = new HttpRequestMessage(HttpMethod.Get, "/api/benchmark-items");
+            requestPrepStopwatch.Stop();
             
-            var httpResponse = await _httpClient.GetAsync("/api/benchmark-items");
-            httpStopwatch.Stop();
+            requestPrepActivity?.SetTag("benchmark.duration_ms", requestPrepStopwatch.ElapsedMilliseconds);
             
-            activity?.SetTag("benchmark.http_request_time_ms", httpStopwatch.ElapsedMilliseconds);
+            using var networkActivity = ActivitySource.StartActivity(
+                "NetworkRequest", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var networkStopwatch = Stopwatch.StartNew();
+            var responseTask = _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
+            var completedTask = await Task.WhenAny(responseTask, timeoutTask);
+            
+            if (completedTask == timeoutTask)
+            {
+                throw new TimeoutException("Request timed out waiting for response headers");
+            }
+            
+            var httpResponse = await responseTask;
+            networkStopwatch.Stop();
+            
+            networkActivity?.SetTag("benchmark.duration_ms", networkStopwatch.ElapsedMilliseconds);
+            networkActivity?.SetTag("benchmark.status_code", (int)httpResponse.StatusCode);
+            networkActivity?.SetTag("benchmark.content_length", httpResponse.Content.Headers.ContentLength ?? 0);
+            
+            using var downloadActivity = ActivitySource.StartActivity(
+                "DownloadContent", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var downloadStopwatch = Stopwatch.StartNew();
+            var contentStream = await httpResponse.Content.ReadAsStreamAsync();
+            downloadStopwatch.Stop();
+            
+            downloadActivity?.SetTag("benchmark.duration_ms", downloadStopwatch.ElapsedMilliseconds);
             
             using var deserializeActivity = ActivitySource.StartActivity(
                 "DeserializeResponse", 
                 ActivityKind.Internal,
                 activity?.Context ?? default);
                 
-            deserializeActivity?.SetTag("benchmark.content_length", httpResponse.Content.Headers.ContentLength ?? 0);
-            
             var deserializeStopwatch = Stopwatch.StartNew();
-            var response = await httpResponse.Content.ReadFromJsonAsync<IEnumerable<BenchmarkItem>>(_jsonOptions);
+            var response = await JsonSerializer.DeserializeAsync<IEnumerable<BenchmarkItem>>(
+                contentStream, _jsonOptions, cancellationToken: CancellationToken.None);
             deserializeStopwatch.Stop();
             
-            deserializeActivity?.SetTag("benchmark.deserialize_time_ms", deserializeStopwatch.ElapsedMilliseconds);
+            deserializeActivity?.SetTag("benchmark.duration_ms", deserializeStopwatch.ElapsedMilliseconds);
             
-            var itemCount = response?.Count() ?? 0;
+            using var postProcessActivity = ActivitySource.StartActivity(
+                "PostProcess", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var postProcessStopwatch = Stopwatch.StartNew();
+            var itemsList = response?.ToList() ?? new List<BenchmarkItem>();
+            var itemCount = itemsList.Count;
+            postProcessStopwatch.Stop();
+            
+            postProcessActivity?.SetTag("benchmark.duration_ms", postProcessStopwatch.ElapsedMilliseconds);
+            postProcessActivity?.SetTag("benchmark.items_count", itemCount);
+            
+            totalStopwatch.Stop();
             
             activity?.SetTag("benchmark.items.count", itemCount);
-            _logger.LogInformationWithContext("Retrieved {ItemCount} benchmark items in {TotalTime}ms (HTTP: {HttpTime}ms, Deserialize: {DeserializeTime}ms)", 
-                itemCount, 
-                httpStopwatch.ElapsedMilliseconds + deserializeStopwatch.ElapsedMilliseconds,
-                httpStopwatch.ElapsedMilliseconds,
-                deserializeStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.request_prep_ms", requestPrepStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.network_ms", networkStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.download_ms", downloadStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.deserialize_ms", deserializeStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.post_process_ms", postProcessStopwatch.ElapsedMilliseconds);
             
-            return response;
+            _logger.LogInformationWithContext(
+                "Retrieved {ItemCount} benchmark items in {TotalTime}ms (Network: {NetworkTime}ms, Download: {DownloadTime}ms, Deserialize: {DeserializeTime}ms, PostProcess: {PostProcessTime}ms)", 
+                itemCount, 
+                totalStopwatch.ElapsedMilliseconds,
+                networkStopwatch.ElapsedMilliseconds,
+                downloadStopwatch.ElapsedMilliseconds,
+                deserializeStopwatch.ElapsedMilliseconds,
+                postProcessStopwatch.ElapsedMilliseconds);
+            
+            return itemsList;
         }
         catch (Exception ex)
         {
-            _logger.LogErrorWithContext(ex, "Error getting all benchmark items");
+            totalStopwatch.Stop();
+            activity?.SetTag("benchmark.error", ex.Message);
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            
+            _logger.LogErrorWithContext(ex, "Error getting all benchmark items");
             return null;
         }
     }
@@ -82,6 +148,8 @@ public class BenchmarkService
                                                                             ActivitySpanId.CreateRandom(), 
                                                                             ActivityTraceFlags.Recorded));
         
+        var totalStopwatch = Stopwatch.StartNew();
+        
         activity?.SetTag("benchmark.item.id", id);
         activity?.SetTag("benchmark.operation", "get_by_id");
         
@@ -89,32 +157,60 @@ public class BenchmarkService
         {
             _logger.LogInformationWithContext("Fetching benchmark item with ID {ItemId}", id);
             
-            var httpStopwatch = Stopwatch.StartNew();
+            using var networkActivity = ActivitySource.StartActivity(
+                "NetworkRequest", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var networkStopwatch = Stopwatch.StartNew();
             var httpResponse = await _httpClient.GetAsync($"/api/benchmark-items/{id}");
-            httpStopwatch.Stop();
+            networkStopwatch.Stop();
             
-            activity?.SetTag("benchmark.http_request_time_ms", httpStopwatch.ElapsedMilliseconds);
+            networkActivity?.SetTag("benchmark.duration_ms", networkStopwatch.ElapsedMilliseconds);
+            networkActivity?.SetTag("benchmark.status_code", (int)httpResponse.StatusCode);
+            
+            using var downloadActivity = ActivitySource.StartActivity(
+                "DownloadContent", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var downloadStopwatch = Stopwatch.StartNew();
+            var contentStream = await httpResponse.Content.ReadAsStreamAsync();
+            downloadStopwatch.Stop();
+            
+            downloadActivity?.SetTag("benchmark.duration_ms", downloadStopwatch.ElapsedMilliseconds);
             
             using var deserializeActivity = ActivitySource.StartActivity(
                 "DeserializeResponse", 
                 ActivityKind.Internal,
                 activity?.Context ?? default);
                 
-            deserializeActivity?.SetTag("benchmark.content_length", httpResponse.Content.Headers.ContentLength ?? 0);
-            
             var deserializeStopwatch = Stopwatch.StartNew();
-            var item = await httpResponse.Content.ReadFromJsonAsync<BenchmarkItem>(_jsonOptions);
+            var item = await JsonSerializer.DeserializeAsync<BenchmarkItem>(
+                contentStream, _jsonOptions, cancellationToken: CancellationToken.None);
             deserializeStopwatch.Stop();
             
-            deserializeActivity?.SetTag("benchmark.deserialize_time_ms", deserializeStopwatch.ElapsedMilliseconds);
+            deserializeActivity?.SetTag("benchmark.duration_ms", deserializeStopwatch.ElapsedMilliseconds);
             
-            _logger.LogInformationWithContext("Retrieved benchmark item {ItemId}", id);
+            totalStopwatch.Stop();
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.network_ms", networkStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.download_ms", downloadStopwatch.ElapsedMilliseconds);
+            activity?.SetTag("benchmark.deserialize_ms", deserializeStopwatch.ElapsedMilliseconds);
+            
+            _logger.LogInformationWithContext("Retrieved benchmark item {ItemId} in {TotalTime}ms", 
+                id, totalStopwatch.ElapsedMilliseconds);
+            
             return item;
         }
         catch (Exception ex)
         {
-            _logger.LogErrorWithContext(ex, "Error getting benchmark item with ID {Id}", id);
+            totalStopwatch.Stop();
+            activity?.SetTag("benchmark.error", ex.Message);
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            
+            _logger.LogErrorWithContext(ex, "Error getting benchmark item with ID {Id}", id);
             return null;
         }
     }
@@ -126,30 +222,54 @@ public class BenchmarkService
                                                                             ActivitySpanId.CreateRandom(), 
                                                                             ActivityTraceFlags.Recorded));
         
+        var totalStopwatch = Stopwatch.StartNew();
         activity?.SetTag("benchmark.item.name", item.Name);
         activity?.SetTag("benchmark.operation", "create");
         
         try
         {
             _logger.LogInformationWithContext("Creating new benchmark item");
+            
+            using var networkActivity = ActivitySource.StartActivity(
+                "NetworkRequest", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var networkStopwatch = Stopwatch.StartNew();
             var response = await _httpClient.PostAsJsonAsync("/api/benchmark-items", item, _jsonOptions);
             response.EnsureSuccessStatusCode();
+            networkStopwatch.Stop();
+            
+            networkActivity?.SetTag("benchmark.duration_ms", networkStopwatch.ElapsedMilliseconds);
             
             using var deserializeActivity = ActivitySource.StartActivity(
                 "DeserializeResponse", 
                 ActivityKind.Internal,
                 activity?.Context ?? default);
             
+            var deserializeStopwatch = Stopwatch.StartNew();
             var createdItem = await response.Content.ReadFromJsonAsync<BenchmarkItem>(_jsonOptions);
+            deserializeStopwatch.Stop();
+            
+            deserializeActivity?.SetTag("benchmark.duration_ms", deserializeStopwatch.ElapsedMilliseconds);
+            
+            totalStopwatch.Stop();
             activity?.SetTag("benchmark.item.id", createdItem?.Id);
-            _logger.LogInformationWithContext("Created benchmark item with ID {ItemId}", createdItem?.Id);
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
+            
+            _logger.LogInformationWithContext("Created benchmark item with ID {ItemId} in {TotalTime}ms", 
+                createdItem?.Id, totalStopwatch.ElapsedMilliseconds);
             
             return createdItem;
         }
         catch (Exception ex)
         {
-            _logger.LogErrorWithContext(ex, "Error creating benchmark item");
+            totalStopwatch.Stop();
+            activity?.SetTag("benchmark.error", ex.Message);
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            
+            _logger.LogErrorWithContext(ex, "Error creating benchmark item");
             return null;
         }
     }
@@ -161,21 +281,42 @@ public class BenchmarkService
                                                                             ActivitySpanId.CreateRandom(), 
                                                                             ActivityTraceFlags.Recorded));
         
+        var totalStopwatch = Stopwatch.StartNew();
         activity?.SetTag("benchmark.item.id", id);
         activity?.SetTag("benchmark.operation", "update");
         
         try
         {
             _logger.LogInformationWithContext("Updating benchmark item with ID {ItemId}", id);
+            
+            using var networkActivity = ActivitySource.StartActivity(
+                "NetworkRequest", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var networkStopwatch = Stopwatch.StartNew();
             var response = await _httpClient.PutAsJsonAsync($"/api/benchmark-items/{id}", item, _jsonOptions);
             response.EnsureSuccessStatusCode();
-            _logger.LogInformationWithContext("Successfully updated benchmark item {ItemId}", id);
+            networkStopwatch.Stop();
+            
+            networkActivity?.SetTag("benchmark.duration_ms", networkStopwatch.ElapsedMilliseconds);
+            
+            totalStopwatch.Stop();
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
+            
+            _logger.LogInformationWithContext("Successfully updated benchmark item {ItemId} in {TotalTime}ms", 
+                id, totalStopwatch.ElapsedMilliseconds);
+                
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogErrorWithContext(ex, "Error updating benchmark item with ID {Id}", id);
+            totalStopwatch.Stop();
+            activity?.SetTag("benchmark.error", ex.Message);
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            
+            _logger.LogErrorWithContext(ex, "Error updating benchmark item with ID {Id}", id);
             return false;
         }
     }
@@ -187,21 +328,42 @@ public class BenchmarkService
                                                                             ActivitySpanId.CreateRandom(), 
                                                                             ActivityTraceFlags.Recorded));
         
+        var totalStopwatch = Stopwatch.StartNew();
         activity?.SetTag("benchmark.item.id", id);
         activity?.SetTag("benchmark.operation", "delete");
         
         try
         {
             _logger.LogInformationWithContext("Deleting benchmark item with ID {ItemId}", id);
+            
+            using var networkActivity = ActivitySource.StartActivity(
+                "NetworkRequest", 
+                ActivityKind.Internal,
+                activity?.Context ?? default);
+                
+            var networkStopwatch = Stopwatch.StartNew();
             var response = await _httpClient.DeleteAsync($"/api/benchmark-items/{id}");
             response.EnsureSuccessStatusCode();
-            _logger.LogInformationWithContext("Successfully deleted benchmark item {ItemId}", id);
+            networkStopwatch.Stop();
+            
+            networkActivity?.SetTag("benchmark.duration_ms", networkStopwatch.ElapsedMilliseconds);
+            
+            totalStopwatch.Stop();
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
+            
+            _logger.LogInformationWithContext("Successfully deleted benchmark item {ItemId} in {TotalTime}ms", 
+                id, totalStopwatch.ElapsedMilliseconds);
+                
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogErrorWithContext(ex, "Error deleting benchmark item with ID {Id}", id);
+            totalStopwatch.Stop();
+            activity?.SetTag("benchmark.error", ex.Message);
+            activity?.SetTag("benchmark.total_duration_ms", totalStopwatch.ElapsedMilliseconds);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            
+            _logger.LogErrorWithContext(ex, "Error deleting benchmark item with ID {Id}", id);
             return false;
         }
     }

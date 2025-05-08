@@ -21,4 +21,10 @@
     <ProjectReference Include="..\Main.ServiceDefaults\Main.ServiceDefaults.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="server_manifest.yaml">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
